@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<menu xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto">
+    <item
+        android:id="@+id/menu_add"
+        android:icon="@android:drawable/ic_input_add"
+        android:title="Koordinat ekle"
+        app:showAsAction="ifRoom" />
+    <item android:id="@+id/menu_import" android:title="Dosyadan içe aktar (KML/KMZ/CSV)" app:showAsAction="never" />
+    <item android:id="@+id/menu_download" android:title="Bu bölgeyi indir (internetsiz harita)" app:showAsAction="never" />
+    <item android:id="@+id/menu_kmz" android:title="KMZ dışa aktar (fotoğraflı)" app:showAsAction="never" />
+    <item android:id="@+id/menu_kml" android:title="KML dışa aktar" app:showAsAction="never" />
+    <item android:id="@+id/menu_clear" android:title="Tüm noktaları sil" app:showAsAction="never" />
+    <item android:id="@+id/menu_help" android:title="Nasıl kullanılır?" app:showAsAction="never" />
+</menu>

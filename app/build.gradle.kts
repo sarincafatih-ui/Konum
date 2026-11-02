@@ -11,8 +11,8 @@ android {
         applicationId = "com.konumkamera.app"
         minSdk = 24
         targetSdk = 34
-        versionCode = 3
-        versionName = "1.2"
+        versionCode = 4
+        versionName = "2.0"
     }
 
     // Sabit imza: güncellemeler eski sürümün üzerine kurulabilsin
@@ -52,4 +52,6 @@ dependencies {
     implementation("com.google.android.material:material:1.12.0")
     implementation("androidx.exifinterface:exifinterface:1.3.7")
     implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.8.4")
+    implementation("androidx.coordinatorlayout:coordinatorlayout:1.2.0")
+    implementation("org.osmdroid:osmdroid-android:6.1.18")
 }

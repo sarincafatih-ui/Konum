@@ -1,10 +1,11 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
-    <!-- Sadece GPS: internet izni YOK, uygulama tamamen çevrimdışı çalışır -->
+    <!-- İnternet sadece uydu görüntüsünü indirmek için; noktalar, notlar ve fotoğraflar internetsiz çalışır -->
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
     <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
-    <!-- Android 9 ve altında galeriye kaydetmek için -->
     <uses-permission
         android:name="android.permission.WRITE_EXTERNAL_STORAGE"
         android:maxSdkVersion="28" />
@@ -20,14 +21,14 @@
 
     <application
         android:allowBackup="true"
-        android:icon="@android:drawable/ic_menu_camera"
+        android:icon="@android:drawable/ic_dialog_map"
         android:label="@string/app_name"
         android:theme="@style/Theme.KonumKamera">
 
         <activity
             android:name=".MainActivity"
-            android:exported="true"
-            android:screenOrientation="unspecified">
+            android:configChanges="orientation|screenSize|screenLayout|keyboardHidden"
+            android:exported="true">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
