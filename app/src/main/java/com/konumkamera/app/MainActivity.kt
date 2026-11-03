@@ -76,10 +76,9 @@ import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.roundToInt
 
-/** Esri World Imagery uydu görüntüsü (Google Earth benzeri, anahtar gerektirmez). */
-object EsriImagery : OnlineTileSourceBase(
-    "EsriWorldImagery", 1, 19, 256, ".jpg",
-    arrayOf("https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/"),
+/** Esri uydu görüntüsü (Google Earth benzeri, hesap/anahtar gerektirmez). */
+open class EsriTiles(name: String, url: String) : OnlineTileSourceBase(
+    name, 1, 19, 256, ".jpg", arrayOf(url),
     "Uydu görüntüsü © Esri, Maxar, Earthstar Geographics"
 ) {
     override fun getTileURLString(pMapTileIndex: Long): String =
@@ -111,6 +110,12 @@ object EsriImagery : OnlineTileSourceBase(
         gray > 256 * 0.7
     }.getOrDefault(false)
 }
+
+object EsriImagery : EsriTiles("EsriWorldImagery",
+    "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/")
+
+object EsriClarity : EsriTiles("EsriClarity",
+    "https://clarity.maptiles.arcgis.com/arcgis/rest/services/World_Imagery/MapServer/tile/")
 
 class MainActivity : AppCompatActivity() {
 
@@ -258,7 +263,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun setupMap() {
         val map = b.map
-        map.setTileSource(EsriImagery)
+        map.setTileSource(currentSource())
         map.setMultiTouchControls(true)
         map.zoomController.setVisibility(CustomZoomButtonsController.Visibility.NEVER)
         map.minZoomLevel = 3.0
@@ -855,6 +860,32 @@ class MainActivity : AppCompatActivity() {
             .setNegativeButton("Vazgeç", null).show()
     }
 
+    // ---------- Görüntü kaynağı ----------
+
+    private fun currentSource(): EsriTiles =
+        if (getSharedPreferences("ayarlar", MODE_PRIVATE).getString("kaynak", "std") == "clarity") EsriClarity
+        else EsriImagery
+
+    private fun chooseSource() {
+        val prefs = getSharedPreferences("ayarlar", MODE_PRIVATE)
+        val ids = arrayOf("std", "clarity")
+        val names = arrayOf(
+            "Esri Standart (önerilen – bölgenizde 18. seviyeye kadar net)",
+            "Esri Clarity (daha yeni çekim, bazı yerlerde daha net)"
+        )
+        val cur = ids.indexOf(prefs.getString("kaynak", "std")).coerceAtLeast(0)
+        AlertDialog.Builder(this)
+            .setTitle("Görüntü kaynağı")
+            .setSingleChoiceItems(names, cur) { d, which ->
+                prefs.edit().putString("kaynak", ids[which]).apply()
+                b.map.setTileSource(currentSource())
+                b.map.invalidate()
+                toast(if (which == 0) "Esri Standart seçildi" else "Esri Clarity seçildi")
+                d.dismiss()
+            }
+            .setNegativeButton("Vazgeç", null).show()
+    }
+
     // ---------- Çevrimdışı harita ----------
 
     private fun downloadArea() {
@@ -863,9 +894,9 @@ class MainActivity : AppCompatActivity() {
         if (zoom < 12) { toast("Önce çalışacağınız bölgeye yakınlaşın, sonra tekrar deneyin."); return }
         val bb = map.boundingBox
         val zMin = max(10, zoom - 4)
-        val zMax = 19
         val cm = try { CacheManager(map) } catch (e: Exception) { toast("İndirme başlatılamadı."); return }
-        val count = cm.possibleTilesInArea(bb, zMin, zMax)
+        val count = cm.possibleTilesInArea(bb, zMin, 18)
+        val count19 = cm.possibleTilesInArea(bb, zMin, 19)
         if (count > MAX_TILES) {
             AlertDialog.Builder(this).setTitle("Alan çok büyük")
                 .setMessage("Bu alan için yaklaşık $count karo gerekiyor. Biraz yakınlaşıp tekrar deneyin " +
@@ -874,21 +905,28 @@ class MainActivity : AppCompatActivity() {
             return
         }
         val mb = max(1, count * 20 / 1024)
-        AlertDialog.Builder(this)
+        val mb19 = max(1, count19 * 20 / 1024)
+        val callback = object : CacheManager.CacheManagerCallback {
+            override fun onTaskComplete() { toast("Bölge indirildi ✓ Artık internetsiz görünür.") }
+            override fun onTaskFailed(errors: Int) { toast("$errors karo indirilemedi (görüntüsü olmayan karolar da sayılır).") }
+            override fun updateProgress(progress: Int, currentZoomLevel: Int, zoomMin: Int, zoomMax: Int) {}
+            override fun downloadStarted() {}
+            override fun setPossibleTilesInArea(total: Int) {}
+        }
+        val dlg = AlertDialog.Builder(this)
             .setTitle("Bu bölgeyi indir")
             .setMessage("Ekranda görünen alanın uydu görüntüsü telefona kaydedilecek.\n\n" +
-                "Yaklaşık $count karo, ~$mb MB\nYakınlaşma: $zMin – $zMax\n\n" +
+                "• 18'e kadar (hızlı): ~$count karo, ~$mb MB\n" +
+                "   Bölgenizdeki en net görüntü 18. seviyede.\n" +
+                "• 19'a kadar (tam): ~$count19 karo, ~$mb19 MB\n" +
+                "   19. seviyede görüntü olan yerler için (şehirler vb.).\n\n" +
                 "İnternet (tercihen Wi-Fi) gerekli. Sonra sahada internetsiz görünür.")
-            .setPositiveButton("İndir") { _, _ ->
-                cm.downloadAreaAsync(this, bb, zMin, zMax, object : CacheManager.CacheManagerCallback {
-                    override fun onTaskComplete() { toast("Bölge indirildi ✓ Artık internetsiz görünür.") }
-                    override fun onTaskFailed(errors: Int) { toast("$errors karo indirilemedi. İnterneti kontrol edip tekrar deneyin.") }
-                    override fun updateProgress(progress: Int, currentZoomLevel: Int, zoomMin: Int, zoomMax: Int) {}
-                    override fun downloadStarted() {}
-                    override fun setPossibleTilesInArea(total: Int) {}
-                })
-            }
-            .setNegativeButton("Vazgeç", null).show()
+            .setPositiveButton("18'e kadar (hızlı)") { _, _ -> cm.downloadAreaAsync(this, bb, zMin, 18, callback) }
+            .setNegativeButton("Vazgeç", null)
+        if (count19 <= MAX_TILES) {
+            dlg.setNeutralButton("19'a kadar (tam)") { _, _ -> cm.downloadAreaAsync(this, bb, zMin, 19, callback) }
+        }
+        dlg.show()
     }
 
     // ---------- Dışa aktarma ----------
@@ -967,6 +1005,7 @@ class MainActivity : AppCompatActivity() {
             R.id.menu_import -> runCatching { importFile.launch(arrayOf("*/*")) }
                 .onFailure { toast("Dosya seçici açılamadı.") }
             R.id.menu_download -> downloadArea()
+            R.id.menu_source -> chooseSource()
             R.id.menu_kmz -> export(true)
             R.id.menu_kml -> export(false)
             R.id.menu_clear -> confirmClearAll()
