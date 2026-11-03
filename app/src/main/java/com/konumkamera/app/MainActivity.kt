@@ -2,6 +2,7 @@ package com.konumkamera.app
 
 import android.Manifest
 import android.content.ActivityNotFoundException
+import android.content.ClipData
 import android.content.ContentValues
 import android.content.Intent
 import android.content.pm.PackageManager
@@ -29,6 +30,7 @@ import android.widget.EditText
 import android.widget.FrameLayout
 import android.widget.ImageView
 import android.widget.LinearLayout
+import android.widget.TextView
 import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AlertDialog
@@ -58,6 +60,9 @@ import org.osmdroid.views.overlay.ScaleBarOverlay
 import org.osmdroid.views.overlay.mylocation.GpsMyLocationProvider
 import org.osmdroid.views.overlay.mylocation.MyLocationNewOverlay
 import java.io.File
+import java.io.FileOutputStream
+import java.util.zip.ZipEntry
+import java.util.zip.ZipOutputStream
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -137,7 +142,7 @@ class MainActivity : AppCompatActivity() {
         }
 
     private val pickImages =
-        registerForActivityResult(ActivityResultContracts.GetMultipleContents()) { uris ->
+        registerForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris ->
             val siteId = pendingSiteId ?: return@registerForActivityResult
             if (uris.isNullOrEmpty()) return@registerForActivityResult
             addGalleryImages(siteId, uris)
@@ -311,12 +316,41 @@ class MainActivity : AppCompatActivity() {
             markers[id] = mk
             b.map.overlays.add(mk)
             mk.setOnMarkerClickListener { _, _ -> openSite(id); true }
+            mk.isDraggable = true                          // basılı tutunca taşınır
+            mk.setOnMarkerDragListener(object : Marker.OnMarkerDragListener {
+                override fun onMarkerDragStart(marker: Marker) {}
+                override fun onMarkerDrag(marker: Marker) {}
+                override fun onMarkerDragEnd(marker: Marker) { confirmMove(id, marker) }
+            })
         }
         m.position = GeoPoint(site.lat, site.lon)
         val (icon, ay) = markerIcon(site)
         m.icon = icon
         m.setAnchor(Marker.ANCHOR_CENTER, ay)
         b.map.invalidate()
+    }
+
+    /** Sürükleme bitince sorar: taşınsın mı, yoksa eski yerine mi dönsün. */
+    private fun confirmMove(id: String, marker: Marker) {
+        val site = store.find(id) ?: return
+        val np = marker.position
+        val res = FloatArray(1)
+        Location.distanceBetween(site.lat, site.lon, np.latitude, np.longitude, res)
+        AlertDialog.Builder(this)
+            .setTitle(displayName(site) + " taşınsın mı?")
+            .setMessage(String.format(Locale.US, "Yeni konum: %.7f, %.7f", np.latitude, np.longitude) +
+                "\nKayma: " + formatDistance(res[0]))
+            .setCancelable(false)
+            .setPositiveButton("Taşı") { _, _ ->
+                site.lat = np.latitude; site.lon = np.longitude
+                site.updated = System.currentTimeMillis()
+                store.save(); addOrUpdateMarker(site)
+                toast(displayName(site) + " taşındı")
+            }
+            .setNegativeButton("Geri al") { _, _ ->
+                marker.position = GeoPoint(site.lat, site.lon); b.map.invalidate()
+            }
+            .show()
     }
 
     private fun refreshAllMarkers() {
@@ -386,10 +420,11 @@ class MainActivity : AppCompatActivity() {
         sb.btnCamera.setOnClickListener { saveSheetNote(); takePhotoFor(id) }
         sb.btnGallery.setOnClickListener {
             saveSheetNote(); pendingSiteId = id
-            runCatching { pickImages.launch("image/*") }.onFailure { toast("Galeri açılamadı.") }
+            runCatching { pickImages.launch(arrayOf("image/*")) }.onFailure { toast("Galeri açılamadı.") }
         }
         sb.btnSave.setOnClickListener { saveSheetNote(); toast("Kaydedildi"); dlg.dismiss() }
         sb.btnDelete.setOnClickListener { confirmDeleteSite(id) }
+        sb.btnShare.setOnClickListener { saveSheetNote(); showShareMenu(store.find(id)) }
         sb.btnNavigate.setOnClickListener { b.map.controller.animateTo(GeoPoint(site.lat, site.lon)); dlg.dismiss() }
 
         dlg.setOnDismissListener {
@@ -537,27 +572,20 @@ class MainActivity : AppCompatActivity() {
             val out = withContext(Dispatchers.Default) {
                 runCatching {
                     val bmp = PhotoUtils.loadRotated(file)
-                    val lines = mutableListOf<String>()
-                    lines += "Nokta: " + displayName(site)
-                    lines += String.format(Locale.US, "Hedef: %.6f, %.6f", site.lat, site.lon)
-                    if (loc != null) {
-                        var g = String.format(Locale.US, "GPS:   %.6f, %.6f", loc.latitude, loc.longitude)
-                        if (loc.hasAccuracy()) g += "  ±" + loc.accuracy.roundToInt() + " m"
-                        lines += g
-                        val res = FloatArray(1)
-                        Location.distanceBetween(loc.latitude, loc.longitude, site.lat, site.lon, res)
-                        lines += "Hedefe uzaklık: " + formatDistance(res[0])
-                    } else lines += "GPS: yok"
-                    lines += SimpleDateFormat("dd.MM.yyyy  HH:mm:ss", trLocale).format(date)
-                    PhotoUtils.stamp(bmp, displayName(site), lines)
-                    val name = "Konum_" + safe(site.name) + "_" +
+                    val name = "Konum_" + safe(displayName(site)) + "_" +
                         SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(date) + ".jpg"
                     val f = File(photoDir(), name)
                     PhotoUtils.saveJpeg(bmp, f)
                     bmp.recycle()
-                    PhotoUtils.writeExif(f.absolutePath, loc?.latitude ?: site.lat, loc?.longitude ?: site.lon,
+                    // Koordinat ve saat fotoğrafın içine (EXIF) yazılır; paylaşırken buradan okunur
+                    PhotoUtils.writeExif(f.absolutePath, loc?.latitude, loc?.longitude,
                         if (loc != null && loc.hasAltitude()) loc.altitude else null, date)
-                    PhotoUtils.copyToGallery(this@MainActivity, f, name, date)
+                    // Galeriye bilgili (sağ alt köşe yazılı) kopya
+                    val tmp = File(cacheDir, "gal_" + name)
+                    if (PhotoUtils.makeShareCopy(f.absolutePath, displayName(site), tmp)) {
+                        PhotoUtils.copyToGallery(this@MainActivity, tmp, name, date)
+                        tmp.delete()
+                    }
                     f
                 }.getOrNull()
             }
@@ -574,14 +602,18 @@ class MainActivity : AppCompatActivity() {
 
     private fun addGalleryImages(siteId: String, uris: List<Uri>) {
         lifecycleScope.launch {
+            var noGps = 0
             val saved = withContext(Dispatchers.IO) {
                 val site = store.find(siteId) ?: return@withContext emptyList<String>()
                 uris.mapIndexedNotNull { i, u ->
                     runCatching {
-                        val bmp = PhotoUtils.loadFromUri(this@MainActivity, u) ?: return@runCatching null
-                        val f = File(photoDir(), "Konum_" + safe(site.name) + "_galeri_" +
+                        val info = PhotoUtils.readExif(this@MainActivity, u)
+                        val bmp = PhotoUtils.loadFromUri(this@MainActivity, u, info.orientation) ?: return@runCatching null
+                        val f = File(photoDir(), "Konum_" + safe(displayName(site)) + "_galeri_" +
                             System.currentTimeMillis() + "_" + i + ".jpg")
                         PhotoUtils.saveJpeg(bmp, f); bmp.recycle()
+                        PhotoUtils.writeExifRaw(f.absolutePath, info.lat, info.lon, info.time)
+                        if (info.lat == null) noGps++
                         f.absolutePath
                     }.getOrNull()
                 }
@@ -592,7 +624,100 @@ class MainActivity : AppCompatActivity() {
             s.updated = System.currentTimeMillis()
             store.save()
             addOrUpdateMarker(s); updateStatus(); refreshSheet(siteId)
-            toast(saved.size.toString() + " resim eklendi")
+            var msg = saved.size.toString() + " resim eklendi"
+            if (noGps > 0) msg += " ($noGps tanesinin içinde koordinat yok)"
+            toast(msg)
+        }
+    }
+
+    // ---------- Paylaşım ----------
+
+    private fun showShareMenu(site: Site?) {
+        val opts = mutableListOf<Pair<String, () -> Unit>>()
+        if (site != null && site.photos.isNotEmpty()) {
+            opts += (displayName(site) + " fotoğrafları") to { sharePhotos(listOf(site), false) }
+            opts += (displayName(site) + " fotoğrafları (ZIP)") to { sharePhotos(listOf(site), true) }
+        }
+        opts += "Tüm fotoğraflar (ZIP)" to { sharePhotos(store.sites.filter { it.photos.isNotEmpty() }, true) }
+        opts += "KMZ – fotoğraflı (Google Earth)" to { export(true) }
+        opts += "KML – sadece konumlar" to { export(false) }
+        AlertDialog.Builder(this)
+            .setTitle("Paylaş")
+            .setItems(opts.map { it.first }.toTypedArray()) { _, w -> opts[w].second() }
+            .setNegativeButton("Vazgeç", null).show()
+    }
+
+    /** Fotoğrafları, içindeki koordinat ve saat sağ alt köşeye yazılmış olarak paylaşır (tek tek ya da ZIP). */
+    private fun sharePhotos(sites: List<Site>, zip: Boolean) {
+        val total = sites.sumOf { it.photos.size }
+        if (total == 0) { toast("Paylaşılacak fotoğraf yok."); return }
+        val tv = TextView(this).apply { text = "0 / $total"; textSize = 18f }
+        val dlg = AlertDialog.Builder(this).setTitle("Fotoğraflar hazırlanıyor").setView(padded(tv))
+            .setCancelable(false).show()
+        lifecycleScope.launch {
+            val files = withContext(Dispatchers.IO) {
+                runCatching {
+                    val dir = File(cacheDir, "share").apply { deleteRecursively(); mkdirs() }
+                    val list = mutableListOf<File>()
+                    var k = 0
+                    for (s in sites) {
+                        s.photos.forEachIndexed { j, p ->
+                            val out = File(dir, safe(displayName(s)) + "_" + (j + 1) + ".jpg")
+                            if (PhotoUtils.makeShareCopy(p, displayName(s), out)) list += out
+                            k++
+                            withContext(Dispatchers.Main) { tv.text = "$k / $total" }
+                        }
+                    }
+                    if (!zip || list.isEmpty()) list
+                    else {
+                        val stamp = SimpleDateFormat("yyyyMMdd_HHmm", Locale.US).format(Date())
+                        val z = File(dir, "Fotograflar_$stamp.zip")
+                        ZipOutputStream(FileOutputStream(z)).use { zos ->
+                            list.forEach { f ->
+                                zos.putNextEntry(ZipEntry(f.name))
+                                f.inputStream().use { it.copyTo(zos) }
+                                zos.closeEntry()
+                            }
+                        }
+                        list.forEach { it.delete() }
+                        saveDownloadFile(z.name, "application/zip", z)
+                        listOf(z)
+                    }
+                }.getOrNull()
+            }
+            dlg.dismiss()
+            if (files.isNullOrEmpty()) { toast("Fotoğraflar hazırlanamadı."); return@launch }
+            val uris = files.map { FileProvider.getUriForFile(this@MainActivity, "$packageName.fileprovider", it) }
+            val intent = if (uris.size == 1) Intent(Intent.ACTION_SEND).apply {
+                type = if (zip) "application/zip" else "image/jpeg"
+                putExtra(Intent.EXTRA_STREAM, uris[0])
+            } else Intent(Intent.ACTION_SEND_MULTIPLE).apply {
+                type = "image/jpeg"
+                putParcelableArrayListExtra(Intent.EXTRA_STREAM, ArrayList(uris))
+            }
+            intent.clipData = ClipData.newRawUri("", uris[0]).apply { uris.drop(1).forEach { addItem(ClipData.Item(it)) } }
+            intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            if (zip) toast("ZIP ayrıca İndirilenler/Konum klasörüne kaydedildi")
+            startActivity(Intent.createChooser(intent, "Paylaş"))
+        }
+    }
+
+    private fun saveDownloadFile(name: String, mime: String, src: File) {
+        runCatching {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                val values = ContentValues().apply {
+                    put(MediaStore.Downloads.DISPLAY_NAME, name)
+                    put(MediaStore.Downloads.MIME_TYPE, mime)
+                    put(MediaStore.Downloads.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS + "/Konum")
+                }
+                val uri = contentResolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values) ?: return
+                contentResolver.openOutputStream(uri)?.use { out -> src.inputStream().use { it.copyTo(out) } }
+            } else {
+                @Suppress("DEPRECATION")
+                val dir = File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS), "Konum")
+                dir.mkdirs()
+                src.copyTo(File(dir, name), overwrite = true)
+            }
         }
     }
 
@@ -808,6 +933,7 @@ class MainActivity : AppCompatActivity() {
     override fun onOptionsItemSelected(item: MenuItem): Boolean {
         when (item.itemId) {
             R.id.menu_add -> showPasteDialog()
+            R.id.menu_share -> showShareMenu(sheetSiteId?.let { store.find(it) })
             R.id.menu_import -> runCatching { importFile.launch(arrayOf("*/*")) }
                 .onFailure { toast("Dosya seçici açılamadı.") }
             R.id.menu_download -> downloadArea()
@@ -826,11 +952,13 @@ class MainActivity : AppCompatActivity() {
             .setMessage(
                 "• + : Koordinat listesini yapıştırın (İsim, enlem, boylam ya da No, sağa, yukarı, kot).\n" +
                 "• Dosyadan içe aktar: KML, KMZ, CSV ya da TXT seçin.\n" +
-                "• Haritaya uzun basarak da nokta ekleyebilirsiniz.\n\n" +
+                "• Haritaya uzun basarak da nokta ekleyebilirsiniz.\n" +
+                "• Daireyi basılı tutup sürükleyerek taşıyabilirsiniz (onay sorulur).\n\n" +
                 "• Daireye dokunun: not yazın, fotoğraf çekin ya da galeriden ekleyin.\n" +
                 "• Boş sarı daire = yapılmadı, içi dolu yeşil daire = yapıldı.\n\n" +
                 "• İnternet varken \"Bu bölgeyi indir\" ile uydu görüntüsünü kaydedin; sahada internetsiz görünür.\n" +
-                "• KMZ dışa aktar: notlar ve fotoğraflarla birlikte Google Earth'te açılır."
+                "• Paylaş: fotoğrafları tek tek ya da ZIP olarak gönderin. Fotoğrafın içindeki koordinat ve saat sağ alt köşeye yazılır.\n" +
+                "• KMZ: notlar ve fotoğraflarla birlikte Google Earth'te açılır."
             )
             .setPositiveButton("Tamam", null).show()
     }
@@ -844,6 +972,7 @@ class MainActivity : AppCompatActivity() {
     private fun requestNeededPermissions() {
         val perms = mutableListOf(Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION)
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) perms += Manifest.permission.WRITE_EXTERNAL_STORAGE
+        else perms += Manifest.permission.ACCESS_MEDIA_LOCATION
         val missing = perms.filter { ContextCompat.checkSelfPermission(this, it) != PackageManager.PERMISSION_GRANTED }
         if (missing.isNotEmpty()) permissionLauncher.launch(missing.toTypedArray())
     }
