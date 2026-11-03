@@ -12,6 +12,8 @@ import android.graphics.Color
 import android.graphics.Paint
 import android.graphics.Typeface
 import android.graphics.drawable.BitmapDrawable
+import android.graphics.BitmapFactory
+import android.graphics.drawable.Drawable
 import android.location.Location
 import android.location.LocationListener
 import android.location.LocationManager
@@ -60,6 +62,8 @@ import org.osmdroid.views.overlay.ScaleBarOverlay
 import org.osmdroid.views.overlay.mylocation.GpsMyLocationProvider
 import org.osmdroid.views.overlay.mylocation.MyLocationNewOverlay
 import java.io.File
+import java.io.ByteArrayInputStream
+import java.io.InputStream
 import java.io.FileOutputStream
 import java.util.zip.ZipEntry
 import java.util.zip.ZipOutputStream
@@ -67,6 +71,7 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 import kotlin.math.floor
+import kotlin.math.abs
 import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.roundToInt
@@ -80,6 +85,31 @@ object EsriImagery : OnlineTileSourceBase(
     override fun getTileURLString(pMapTileIndex: Long): String =
         baseUrl + MapTileIndex.getZoom(pMapTileIndex) + "/" +
             MapTileIndex.getY(pMapTileIndex) + "/" + MapTileIndex.getX(pMapTileIndex)
+
+    /**
+     * Esri, görüntüsü olmayan yakınlaşmalarda gri "Map data not yet available" karesi gönderir.
+     * Bu kareler reddedilir; harita bir üst seviyedeki gerçek görüntüyü büyüterek gösterir.
+     */
+    override fun getDrawable(aFileInputStream: InputStream?): Drawable? {
+        val bytes = runCatching { aFileInputStream?.readBytes() }.getOrNull() ?: return null
+        if (isPlaceholder(bytes)) return null
+        return super.getDrawable(ByteArrayInputStream(bytes))
+    }
+
+    private fun isPlaceholder(bytes: ByteArray): Boolean = runCatching {
+        val bmp = BitmapFactory.decodeByteArray(bytes, 0, bytes.size,
+            BitmapFactory.Options().apply { inSampleSize = 4 }) ?: return false
+        var gray = 0
+        val w = bmp.width
+        val h = bmp.height
+        for (yy in 0 until 16) for (xx in 0 until 16) {
+            val p = bmp.getPixel(xx * w / 16, yy * h / 16)
+            val r = Color.red(p); val g = Color.green(p); val bl = Color.blue(p)
+            if (abs(r - g) < 8 && abs(g - bl) < 8 && r in 185..225) gray++
+        }
+        bmp.recycle()
+        gray > 256 * 0.7
+    }.getOrDefault(false)
 }
 
 class MainActivity : AppCompatActivity() {
