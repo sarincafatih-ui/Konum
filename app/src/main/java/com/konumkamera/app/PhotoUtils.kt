@@ -50,16 +50,112 @@ object PhotoUtils {
         return if (rotated.isMutable) rotated else rotated.copy(Bitmap.Config.ARGB_8888, true)
     }
 
-    /** Galeriden seçilen resmi küçülterek açar. */
-    fun loadFromUri(context: Context, uri: Uri, maxSide: Int = 2400): Bitmap? = runCatching {
+    /** Fotoğrafın içindeki (EXIF) konum ve çekim saati. */
+    data class ExifInfo(val lat: Double?, val lon: Double?, val time: String?, val orientation: Int = 1)
+
+    private fun exifOf(e: ExifInterface): ExifInfo {
+        val ll = runCatching { e.latLong }.getOrNull()
+        val t = e.getAttribute(ExifInterface.TAG_DATETIME_ORIGINAL) ?: e.getAttribute(ExifInterface.TAG_DATETIME)
+        val o = e.getAttributeInt(ExifInterface.TAG_ORIENTATION, ExifInterface.ORIENTATION_NORMAL)
+        return ExifInfo(ll?.getOrNull(0), ll?.getOrNull(1), t, o)
+    }
+
+    fun readExif(path: String): ExifInfo =
+        runCatching { exifOf(ExifInterface(path)) }.getOrDefault(ExifInfo(null, null, null))
+
+    /** Galeriden gelen resmin EXIF bilgisi (Android 10+ için konumu gizlenmemiş asıl dosyayı ister). */
+    fun readExif(context: Context, uri: Uri): ExifInfo {
+        val tries = mutableListOf<Uri>()
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) runCatching { tries += MediaStore.setRequireOriginal(uri) }
+        tries += uri
+        for (u in tries) {
+            val info = runCatching {
+                context.contentResolver.openInputStream(u)?.use { exifOf(ExifInterface(it)) }
+            }.getOrNull()
+            if (info != null) return info
+        }
+        return ExifInfo(null, null, null)
+    }
+
+    private fun degrees(orientation: Int) = when (orientation) {
+        ExifInterface.ORIENTATION_ROTATE_90 -> 90f
+        ExifInterface.ORIENTATION_ROTATE_180 -> 180f
+        ExifInterface.ORIENTATION_ROTATE_270 -> 270f
+        else -> 0f
+    }
+
+    /** Galeriden seçilen resmi küçülüp doğru yöne çevirerek açar. */
+    fun loadFromUri(context: Context, uri: Uri, orientation: Int, maxSide: Int = 2400): Bitmap? = runCatching {
         val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
         context.contentResolver.openInputStream(uri)?.use { BitmapFactory.decodeStream(it, null, bounds) }
         var sample = 1
         while (max(bounds.outWidth, bounds.outHeight) / sample > maxSide) sample *= 2
-        context.contentResolver.openInputStream(uri)?.use {
+        val raw = context.contentResolver.openInputStream(uri)?.use {
             BitmapFactory.decodeStream(it, null, BitmapFactory.Options().apply { inSampleSize = sample })
-        }
+        } ?: return@runCatching null
+        val deg = degrees(orientation)
+        if (deg == 0f) raw
+        else Bitmap.createBitmap(raw, 0, 0, raw.width, raw.height, Matrix().apply { postRotate(deg) }, true)
     }.getOrNull()
+
+    /** "2026:11:02 21:47:12" -> "02.11.2026 21:47:12" */
+    fun formatExifTime(t: String?): String? = runCatching {
+        val d = SimpleDateFormat("yyyy:MM:dd HH:mm:ss", Locale.US).parse(t!!.trim())!!
+        SimpleDateFormat("dd.MM.yyyy HH:mm:ss", Locale.US).format(d)
+    }.getOrNull()
+
+    /** Sağ alt köşeye, sağa yaslı bilgi kutusu. */
+    fun stampRight(bmp: Bitmap, lines: List<String>) {
+        val canvas = Canvas(bmp)
+        val s = minOf(bmp.width, bmp.height)
+        val ts = s * 0.034f
+        val pad = ts * 0.7f
+        val lineH = ts * 1.32f
+        val paint = TextPaint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = Color.WHITE; textSize = ts; typeface = Typeface.DEFAULT_BOLD
+            textAlign = Paint.Align.RIGHT; setShadowLayer(ts * 0.1f, 0f, 0f, Color.BLACK)
+        }
+        val maxW = lines.maxOf { paint.measureText(it) }
+        val m = s * 0.025f
+        val boxW = maxW + pad * 2
+        val boxH = lines.size * lineH + pad * 2 - (lineH - ts)
+        val rect = RectF(bmp.width - m - boxW, bmp.height - m - boxH, bmp.width - m, bmp.height - m)
+        canvas.drawRoundRect(rect, ts * 0.4f, ts * 0.4f, Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.argb(150, 0, 0, 0) })
+        lines.forEachIndexed { i, line ->
+            canvas.drawText(line, rect.right - pad, rect.top + pad + ts * 0.9f + i * lineH, paint)
+        }
+    }
+
+    /**
+     * Paylaşım kopyası: koordinat ve saat FOTOĞRAFIN İÇİNDEKİ (EXIF) bilgiden okunur
+     * ve resmin sağ alt köşesine yazılır.
+     */
+    fun makeShareCopy(srcPath: String, title: String, out: File): Boolean = runCatching {
+        val info = readExif(srcPath)
+        val bmp0 = decodeScaled(srcPath, 2400) ?: return false
+        val bmp = if (bmp0.isMutable) bmp0 else bmp0.copy(Bitmap.Config.ARGB_8888, true)
+        val lines = mutableListOf(title)
+        if (info.lat != null && info.lon != null) {
+            lines += String.format(Locale.US, "Enlem: %.7f", info.lat)
+            lines += String.format(Locale.US, "Boylam: %.7f", info.lon)
+        } else lines += "Koordinat yok"
+        formatExifTime(info.time)?.let { lines += it }
+        stampRight(bmp, lines)
+        saveJpeg(bmp, out, 90)
+        bmp.recycle()
+        writeExifRaw(out.absolutePath, info.lat, info.lon, info.time)
+        true
+    }.getOrDefault(false)
+
+    fun writeExifRaw(path: String, lat: Double?, lon: Double?, time: String?) {
+        runCatching {
+            ExifInterface(path).apply {
+                if (lat != null && lon != null) setLatLong(lat, lon)
+                if (time != null) setAttribute(ExifInterface.TAG_DATETIME_ORIGINAL, time)
+                saveAttributes()
+            }
+        }
+    }
 
     /** Küçük önizleme ya da KMZ için küçültülmüş dosya okuma. */
     fun decodeScaled(path: String, maxSide: Int): Bitmap? {

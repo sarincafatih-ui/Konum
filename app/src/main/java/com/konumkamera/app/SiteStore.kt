@@ -10,8 +10,8 @@ import java.util.UUID
 data class Site(
     val id: String,
     var name: String,
-    val lat: Double,
-    val lon: Double,
+    var lat: Double,
+    var lon: Double,
     var note: String = "",
     val photos: MutableList<String> = mutableListOf(),   // uygulama klasöründeki dosya yolları
     var updated: Long = 0L,

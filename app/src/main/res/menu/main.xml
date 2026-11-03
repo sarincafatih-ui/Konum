@@ -6,6 +6,11 @@
         android:icon="@android:drawable/ic_input_add"
         android:title="Koordinat ekle"
         app:showAsAction="ifRoom" />
+    <item
+        android:id="@+id/menu_share"
+        android:icon="@android:drawable/ic_menu_share"
+        android:title="Paylaş"
+        app:showAsAction="ifRoom" />
     <item android:id="@+id/menu_import" android:title="Dosyadan içe aktar (KML/KMZ/CSV)" app:showAsAction="never" />
     <item android:id="@+id/menu_download" android:title="Bu bölgeyi indir (internetsiz harita)" app:showAsAction="never" />
     <item android:id="@+id/menu_kmz" android:title="KMZ dışa aktar (fotoğraflı)" app:showAsAction="never" />

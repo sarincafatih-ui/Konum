@@ -106,6 +106,14 @@
                 android:text="Galeriden Ekle" />
         </LinearLayout>
 
+        <com.google.android.material.button.MaterialButton
+            android:id="@+id/btnShare"
+            style="@style/Widget.Material3.Button.TonalButton"
+            android:layout_width="match_parent"
+            android:layout_height="56dp"
+            android:layout_marginTop="8dp"
+            android:text="Paylaş (fotoğraflar / ZIP / KMZ)" />
+
         <LinearLayout
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
